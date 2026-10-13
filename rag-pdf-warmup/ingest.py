@@ -200,10 +200,11 @@ def upsert_chunks(
         )
 
 
-def _require_env(name: str) -> str:
+def require_env(name: str) -> str:
+    """Return a non-empty env var, or raise RuntimeError naming the missing key."""
     value = os.environ.get(name, "").strip()
     if not value:
-        raise SystemExit(f"Missing {name}. Set it in rag-pdf-warmup/.env")
+        raise RuntimeError(f"Missing {name}. Set it in rag-pdf-warmup/.env")
     return value
 
 
@@ -213,10 +214,10 @@ def main() -> int:
     from pinecone import Pinecone, PineconeError
 
     load_dotenv(Path(__file__).parent / ".env")
-    openai_client = OpenAI(api_key=_require_env("OPENAI_API_KEY"))
-    pc = Pinecone(api_key=_require_env("PINECONE_API_KEY"))
 
     try:
+        openai_client = OpenAI(api_key=require_env("OPENAI_API_KEY"))
+        pc = Pinecone(api_key=require_env("PINECONE_API_KEY"))
         pages = load_pages(DATA_DIR)
         chunks = chunk_pages(pages)
         for source, count in sorted(Counter(c.source for c in chunks).items()):
