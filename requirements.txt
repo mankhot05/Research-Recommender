@@ -1,0 +1,11 @@
+langchain
+langgraph
+langchain-openai
+pinecone
+sentence-transformers
+fastapi
+uvicorn
+pydantic
+python-dotenv
+arxiv
+pytest
