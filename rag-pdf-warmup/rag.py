@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 DEFAULT_K = 4
 SNIPPET_LENGTH = 300
 NO_ANSWER = "I don't know"
+MAX_RETRIES = 3
+REQUEST_TIMEOUT_SECONDS = 30.0
 
 SYSTEM_PROMPT = f"""You answer questions about research papers using ONLY the numbered \
 context chunks provided by the user.
@@ -149,15 +151,29 @@ def _to_sources(chunks: Sequence[RetrievedChunk]) -> list[Source]:
     ]
 
 
-def _default_dependencies() -> tuple[Retriever, ChatModel]:
+def build_dependencies() -> tuple[Retriever, ChatModel]:
+    """Build the real Pinecone retriever and OpenAI chat model from env.
+
+    Both SDKs retry transient failures (429/5xx/timeouts) with backoff; the
+    policy is set explicitly here rather than wrapped in a second retry layer.
+    """
     from dotenv import load_dotenv
     from openai import OpenAI
-    from pinecone import Pinecone
+    from pinecone import Pinecone, RetryConfig
 
     load_dotenv(Path(__file__).parent / ".env")
-    openai_client = OpenAI(api_key=require_env("OPENAI_API_KEY"))
+    openai_client = OpenAI(
+        api_key=require_env("OPENAI_API_KEY"),
+        max_retries=MAX_RETRIES,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
     chat_model_name = require_env("OPENAI_CHAT_MODEL")
-    index = Pinecone(api_key=require_env("PINECONE_API_KEY")).index(INDEX_NAME)
+    pc = Pinecone(
+        api_key=require_env("PINECONE_API_KEY"),
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        retry_config=RetryConfig(max_retries=MAX_RETRIES),
+    )
+    index = pc.index(INDEX_NAME)
     return (
         PineconeRetriever(openai_client, index),
         OpenAIChatModel(openai_client, chat_model_name),
@@ -183,7 +199,7 @@ def answer(
         raise ValueError(f"k must be at least 1, got {k}")
 
     if retriever is None or chat_model is None:
-        default_retriever, default_chat_model = _default_dependencies()
+        default_retriever, default_chat_model = build_dependencies()
         retriever = retriever or default_retriever
         chat_model = chat_model or default_chat_model
 

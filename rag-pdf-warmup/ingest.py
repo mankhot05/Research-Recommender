@@ -200,11 +200,15 @@ def upsert_chunks(
         )
 
 
+class ConfigError(RuntimeError):
+    """Required configuration (e.g. an env var) is missing."""
+
+
 def require_env(name: str) -> str:
-    """Return a non-empty env var, or raise RuntimeError naming the missing key."""
+    """Return a non-empty env var, or raise ConfigError naming the missing key."""
     value = os.environ.get(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing {name}. Set it in rag-pdf-warmup/.env")
+        raise ConfigError(f"Missing {name}. Set it in rag-pdf-warmup/.env")
     return value
 
 

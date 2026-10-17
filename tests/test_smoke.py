@@ -1,4 +1,5 @@
 """Smoke test: every app module imports cleanly."""
+
 import importlib
 
 import pytest
