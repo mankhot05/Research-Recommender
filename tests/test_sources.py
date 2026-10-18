@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import arxiv
 import pytest
@@ -16,7 +16,7 @@ def make_result(
     title: str = "A Title",
     summary: str = "An abstract.",
     authors: tuple[str, ...] = ("Ada Lovelace",),
-    published: datetime = datetime(2024, 1, 3, 12, 0, tzinfo=timezone.utc),
+    published: datetime = datetime(2024, 1, 3, 12, 0, tzinfo=UTC),
     primary_category: str = "cs.LG",
 ) -> arxiv.Result:
     return arxiv.Result(
@@ -117,7 +117,7 @@ def test_maps_metadata_fields(use_client):
             [
                 make_result(
                     authors=("Ada Lovelace", "Alan Turing"),
-                    published=datetime(2023, 12, 31, 23, 0, tzinfo=timezone.utc),
+                    published=datetime(2023, 12, 31, 23, 0, tzinfo=UTC),
                     primary_category="stat.ML",
                 )
             ]

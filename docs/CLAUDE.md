@@ -5,8 +5,11 @@ Stack: Python 3.12, LangChain + LangGraph, Pinecone, Hugging Face sentence-trans
 The roadmap and current chunk are in @docs/ROADMAP.md.
 
 ## Commands
-- Install: `pip install -r requirements.txt`
+- Install: `python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 - Test: `pytest -q`
+- Lint: `ruff check app tests scripts && ruff format app tests scripts`
+- Ingest arXiv papers into Pinecone: `python -m scripts.ingest_arxiv --query "graph neural networks" --max 200`
+- Search the index: `python -m scripts.search "message passing for molecules" --k 5 --year-min 2022 [--category cs.LG]`
 - Run the API (from Chunk 5 on): `uvicorn app.main:app --reload`
 
 ## Conventions
