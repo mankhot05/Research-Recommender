@@ -1,8 +1,10 @@
 """Vector search over the Pinecone index of paper abstracts.
 
 Each embedder gets its own index (papers-<name>-<dimension>), so vectors from
-different models never share an index. Papers are stored as documents keyed by
-arxiv_id, so re-ingesting a paper overwrites it instead of duplicating it.
+different models never share an index. The index is a plain serverless dense
+index: it declares only the vector, and every Paper field is stored as per-record
+metadata (Pinecone indexes metadata automatically, so year/category filters work).
+Records are keyed by arxiv_id, so re-ingesting a paper overwrites it.
 """
 
 from __future__ import annotations
@@ -21,10 +23,10 @@ if TYPE_CHECKING:
     from pinecone.index import Index
 
 NAMESPACE = "arxiv"
-VECTOR_FIELD = "embedding"
 UPSERT_BATCH_SIZE = 100
 CLOUD = "aws"
 REGION = "us-east-1"
+METRIC = "cosine"
 
 PAPER_FIELDS = list(Paper.model_fields)
 
@@ -55,47 +57,58 @@ def _pinecone() -> Pinecone:
 
 
 def get_index(embedder: Embedder) -> Index:
-    """Return the embedder's index, creating it (serverless, cosine) if missing."""
-    from pinecone import SchemaBuilder
+    """Return the embedder's index, creating it (serverless, cosine) if missing.
+
+    Raises RetrievalConfigError if an existing index declares metadata fields in
+    its schema; that index must be deleted by hand before ingesting again.
+    """
+    from pinecone import ServerlessSpec
 
     pc = _pinecone()
     name = index_name(embedder)
-    if not pc.indexes.exists(name):
-        # Numbers are stored as floats, so year is a filterable float field.
-        schema = (
-            SchemaBuilder()
-            .add_dense_vector_field(
-                VECTOR_FIELD, dimension=embedder.dimension, metric="cosine"
-            )
-            .add_float_field("year", filterable=True)
-            .add_string_field("primary_category", filterable=True)
-            .build()
-        )
+    if pc.indexes.exists(name):
+        _check_plain_dense_index(pc, name)
+    else:
         # Blocks until the index is ready to accept writes.
         pc.indexes.create(
             name=name,
-            schema=schema,
-            deployment={
-                "deployment_type": "managed",
-                "cloud": CLOUD,
-                "region": REGION,
-            },
+            dimension=embedder.dimension,
+            metric=METRIC,
+            spec=ServerlessSpec(cloud=CLOUD, region=REGION),
         )
     return pc.index(name)
 
 
-def paper_to_document(paper: Paper, vector: Sequence[float]) -> dict[str, Any]:
-    """Every Paper field plus the vector, keyed by arxiv_id."""
+def _check_plain_dense_index(pc: Pinecone, name: str) -> None:
+    """Fail loudly if the index declares anything besides vector fields."""
+    from pinecone.models.indexes.schema import DenseVectorField, SparseVectorField
+
+    fields = pc.indexes.describe(name).schema.fields
+    extra = sorted(
+        field_name
+        for field_name, field in fields.items()
+        if not isinstance(field, (DenseVectorField, SparseVectorField))
+    )
+    if extra:
+        raise RetrievalConfigError(
+            f"Index {name!r} declares metadata fields in its schema ({', '.join(extra)}). "
+            "It was created with an old configuration and is not deleted automatically. "
+            "Delete it in the Pinecone console (or with pc.indexes.delete) and re-run."
+        )
+
+
+def paper_to_record(paper: Paper, vector: Sequence[float]) -> dict[str, Any]:
+    """A Pinecone vector record: id, values, and every Paper field as metadata."""
     return {
-        "_id": paper.arxiv_id,
-        VECTOR_FIELD: list(vector),
-        **paper.model_dump(mode="json"),
+        "id": paper.arxiv_id,
+        "values": list(vector),
+        "metadata": paper.model_dump(mode="json"),
     }
 
 
-def document_to_paper(fields: dict[str, Any]) -> Paper:
-    """Rebuild a Paper from stored fields; Paper's validators re-check them."""
-    return Paper.model_validate(fields)
+def metadata_to_paper(metadata: dict[str, Any]) -> Paper:
+    """Rebuild a Paper from stored metadata; Paper's validators re-check it."""
+    return Paper.model_validate(metadata)
 
 
 def upsert_papers(
@@ -118,10 +131,8 @@ def upsert_papers(
     for start in range(0, len(unique), UPSERT_BATCH_SIZE):
         batch = unique[start : start + UPSERT_BATCH_SIZE]
         vectors = embedder.embed_documents([paper_to_text(p) for p in batch])
-        documents = [
-            paper_to_document(p, v) for p, v in zip(batch, vectors, strict=True)
-        ]
-        index.documents.upsert(namespace=NAMESPACE, documents=documents)
+        records = [paper_to_record(p, v) for p, v in zip(batch, vectors, strict=True)]
+        index.upsert(vectors=records, namespace=NAMESPACE, show_progress=False)
     return len(unique)
 
 
@@ -149,8 +160,6 @@ def search(
     index: Index | None = None,
 ) -> list[tuple[Paper, float]]:
     """The k papers most similar to the question, best first, with their scores."""
-    from pinecone import DenseVectorQuery
-
     if not question.strip():
         raise ValueError("question must not be empty")
     if k < 1:
@@ -160,19 +169,14 @@ def search(
     if index is None:
         index = get_index(embedder)
 
-    response = index.documents.search(
-        namespace=NAMESPACE,
+    response = index.query(
+        vector=embedder.embed_query(question),
         top_k=k,
-        score_by=[
-            DenseVectorQuery(field=VECTOR_FIELD, values=embedder.embed_query(question))
-        ],
-        include_fields=PAPER_FIELDS,
+        namespace=NAMESPACE,
         filter=build_filter(year_min, categories),
+        include_metadata=True,
     )
     return [
-        (
-            document_to_paper({f: match.get(f) for f in PAPER_FIELDS}),
-            float(match.score),
-        )
+        (metadata_to_paper(dict(match.metadata or {})), float(match.score))
         for match in response.matches
     ]

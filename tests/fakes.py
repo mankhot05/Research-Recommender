@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
-
-from pinecone.models.documents.document import Document
 
 from app.schemas import Paper
 
@@ -31,30 +30,34 @@ class FakeEmbedder:
         return [float(len(text)), 0.0, 1.0]
 
 
-class FakeSearchResponse:
-    def __init__(self, matches: list[Document]) -> None:
+@dataclass
+class FakeMatch:
+    """A query match as Pinecone returns it: id, score and stored metadata."""
+
+    id: str
+    score: float
+    metadata: dict[str, Any]
+
+
+class FakeQueryResponse:
+    def __init__(self, matches: list[FakeMatch]) -> None:
         self.matches = matches
 
 
-class FakeDocuments:
-    """Stands in for Index.documents: records calls, returns canned matches."""
+class FakeIndex:
+    """Stands in for a Pinecone Index: records calls, returns canned matches."""
 
-    def __init__(self, matches: list[Document]) -> None:
-        self._matches = matches
+    def __init__(self, matches: list[FakeMatch] | None = None) -> None:
+        self._matches = matches or []
         self.upserts: list[dict[str, Any]] = []
-        self.searches: list[dict[str, Any]] = []
+        self.queries: list[dict[str, Any]] = []
 
     def upsert(self, **kwargs: Any) -> None:
         self.upserts.append(kwargs)
 
-    def search(self, **kwargs: Any) -> FakeSearchResponse:
-        self.searches.append(kwargs)
-        return FakeSearchResponse(self._matches)
-
-
-class FakeIndex:
-    def __init__(self, matches: list[Document] | None = None) -> None:
-        self.documents = FakeDocuments(matches or [])
+    def query(self, **kwargs: Any) -> FakeQueryResponse:
+        self.queries.append(kwargs)
+        return FakeQueryResponse(self._matches)
 
 
 def make_paper(arxiv_id: str = "2401.01234", **overrides: Any) -> Paper:

@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
-from pinecone.models.documents.document import Document
+from pinecone import ServerlessSpec
+from pinecone.models.indexes.schema import (
+    DenseVectorField,
+    FloatField,
+    IndexSchema,
+    StringField,
+)
 
 from app import retrieval
 from app.retrieval import (
@@ -18,7 +25,7 @@ from app.retrieval import (
     search,
     upsert_papers,
 )
-from tests.fakes import FakeEmbedder, FakeIndex, make_paper
+from tests.fakes import FakeEmbedder, FakeIndex, FakeMatch, make_paper
 
 # --- build_filter ---------------------------------------------------------
 
@@ -62,11 +69,11 @@ def test_build_filter_year_zero_is_kept():
 # --- search -----------------------------------------------------------------
 
 
-def stored_match(paper, score: float) -> Document:
-    """A match as Pinecone returns it: numbers come back as floats."""
-    fields = paper.model_dump(mode="json")
-    fields["year"] = float(fields["year"])
-    return Document({"_id": paper.arxiv_id, "_score": score, **fields})
+def stored_match(paper, score: float) -> FakeMatch:
+    """A match as Pinecone returns it: numbers in metadata come back as floats."""
+    metadata = paper.model_dump(mode="json")
+    metadata["year"] = float(metadata["year"])
+    return FakeMatch(id=paper.arxiv_id, score=score, metadata=metadata)
 
 
 def test_search_sends_filter_and_query_to_index():
@@ -82,17 +89,17 @@ def test_search_sends_filter_and_query_to_index():
         index=index,
     )
 
-    [call] = index.documents.searches
-    assert call["namespace"] == NAMESPACE
-    assert call["top_k"] == 3
-    assert call["filter"] == {
-        "year": {"$gte": 2022},
-        "primary_category": {"$in": ["cs.LG"]},
+    [call] = index.queries
+    assert call == {
+        "vector": [14.0, 0.0, 1.0],
+        "top_k": 3,
+        "namespace": NAMESPACE,
+        "filter": {
+            "year": {"$gte": 2022},
+            "primary_category": {"$in": ["cs.LG"]},
+        },
+        "include_metadata": True,
     }
-    assert call["include_fields"] == PAPER_FIELDS
-    [query] = call["score_by"]
-    assert query.field == "embedding"
-    assert query.values == [14.0, 0.0, 1.0]
     assert embedder.calls == ["graph networks"]
 
 
@@ -101,7 +108,7 @@ def test_search_without_filters_sends_none():
 
     search("graph networks", embedder=FakeEmbedder(), index=index)
 
-    [call] = index.documents.searches
+    [call] = index.queries
     assert call["filter"] is None
     assert call["top_k"] == 5
 
@@ -126,7 +133,7 @@ def test_search_rejects_invalid_arguments(question, k):
     with pytest.raises(ValueError):
         search(question, k=k, embedder=FakeEmbedder(), index=index)
 
-    assert index.documents.searches == []
+    assert index.queries == []
 
 
 # --- upsert_papers ----------------------------------------------------------
@@ -139,31 +146,33 @@ def test_upsert_papers_batches_of_100():
     count = upsert_papers(papers, FakeEmbedder(), index=index)
 
     assert count == 250
-    sizes = [len(call["documents"]) for call in index.documents.upserts]
+    sizes = [len(call["vectors"]) for call in index.upserts]
     assert sizes == [100, 100, 50]
-    assert all(call["namespace"] == NAMESPACE for call in index.documents.upserts)
+    assert all(call["namespace"] == NAMESPACE for call in index.upserts)
 
 
-def test_upsert_papers_document_shape():
+def test_upsert_papers_record_shape():
     paper = make_paper("2401.01234", title="Attention", abstract="Abstract.")
     index = FakeIndex()
 
     upsert_papers([paper], FakeEmbedder(), index=index)
 
-    [document] = index.documents.upserts[0]["documents"]
-    assert document == {
-        "_id": "2401.01234",
-        "embedding": [float(len("Attention\n\nAbstract.")), 0.0, 1.0],
-        "arxiv_id": "2401.01234",
-        "title": "Attention",
-        "abstract": "Abstract.",
-        "authors": ["Ada Lovelace", "Alan Turing"],
-        "published": "2024-01-03",
-        "year": 2024,
-        "primary_category": "cs.LG",
-        "url": "https://arxiv.org/abs/2401.01234",
+    [record] = index.upserts[0]["vectors"]
+    assert record == {
+        "id": "2401.01234",
+        "values": [float(len("Attention\n\nAbstract.")), 0.0, 1.0],
+        "metadata": {
+            "arxiv_id": "2401.01234",
+            "title": "Attention",
+            "abstract": "Abstract.",
+            "authors": ["Ada Lovelace", "Alan Turing"],
+            "published": "2024-01-03",
+            "year": 2024,
+            "primary_category": "cs.LG",
+            "url": "https://arxiv.org/abs/2401.01234",
+        },
     }
-    assert set(PAPER_FIELDS) <= set(document)
+    assert set(record["metadata"]) == set(PAPER_FIELDS)
 
 
 def test_upsert_papers_drops_duplicate_ids_keeping_first():
@@ -174,8 +183,8 @@ def test_upsert_papers_drops_duplicate_ids_keeping_first():
     index = FakeIndex()
 
     assert upsert_papers(papers, FakeEmbedder(), index=index) == 1
-    [document] = index.documents.upserts[0]["documents"]
-    assert document["title"] == "First"
+    [record] = index.upserts[0]["vectors"]
+    assert record["metadata"]["title"] == "First"
 
 
 def test_upsert_papers_empty_input_does_nothing():
@@ -183,7 +192,7 @@ def test_upsert_papers_empty_input_does_nothing():
     index = FakeIndex()
 
     assert upsert_papers([], embedder, index=index) == 0
-    assert index.documents.upserts == []
+    assert index.upserts == []
     assert embedder.calls == []
 
 
@@ -202,22 +211,41 @@ def test_index_name_rejects_invalid_names():
         index_name(embedder)
 
 
+PLAIN_SCHEMA = IndexSchema(
+    fields={"_values": DenseVectorField(dimension=3, metric="cosine")}
+)
+OLD_SCHEMA = IndexSchema(
+    fields={
+        "embedding": DenseVectorField(dimension=3, metric="cosine"),
+        "year": FloatField(filterable=True),
+        "primary_category": StringField(filterable=True),
+    }
+)
+
+
 class FakeIndexes:
-    def __init__(self, existing: set[str]) -> None:
+    def __init__(self, existing: dict[str, IndexSchema]) -> None:
         self.existing = existing
         self.created: list[dict] = []
+        self.deleted: list[str] = []
 
     def exists(self, name: str) -> bool:
         return name in self.existing
 
+    def describe(self, name: str) -> SimpleNamespace:
+        return SimpleNamespace(name=name, schema=self.existing[name])
+
     def create(self, **kwargs) -> None:
         self.created.append(kwargs)
-        self.existing.add(kwargs["name"])
+        self.existing[kwargs["name"]] = PLAIN_SCHEMA
+
+    def delete(self, name: str) -> None:
+        self.deleted.append(name)
 
 
 class FakePinecone:
-    def __init__(self, existing: set[str] | None = None) -> None:
-        self.indexes = FakeIndexes(existing or set())
+    def __init__(self, existing: dict[str, IndexSchema] | None = None) -> None:
+        self.indexes = FakeIndexes(existing or {})
         self.opened: list[str] = []
 
     def index(self, name: str) -> FakeIndex:
@@ -225,31 +253,46 @@ class FakePinecone:
         return FakeIndex()
 
 
-def test_get_index_creates_missing_index(monkeypatch):
+def test_get_index_creates_plain_serverless_index(monkeypatch):
     pc = FakePinecone()
     monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
 
     get_index(FakeEmbedder())
 
     [created] = pc.indexes.created
-    assert created["name"] == "papers-fake-3"
-    fields = created["schema"]["fields"]
-    assert fields["embedding"]["dimension"] == 3
-    assert fields["embedding"]["metric"] == "cosine"
-    assert fields["year"]["filterable"] is True
-    assert fields["primary_category"]["filterable"] is True
-    assert created["deployment"]["cloud"] == "aws"
+    assert created == {
+        "name": "papers-fake-3",
+        "dimension": 3,
+        "metric": "cosine",
+        "spec": ServerlessSpec(cloud="aws", region="us-east-1"),
+    }
+    assert "schema" not in created
     assert pc.opened == ["papers-fake-3"]
 
 
-def test_get_index_reuses_existing_index(monkeypatch):
-    pc = FakePinecone(existing={"papers-fake-3"})
+def test_get_index_reuses_existing_plain_index(monkeypatch):
+    pc = FakePinecone(existing={"papers-fake-3": PLAIN_SCHEMA})
     monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
 
     get_index(FakeEmbedder())
 
     assert pc.indexes.created == []
     assert pc.opened == ["papers-fake-3"]
+
+
+def test_get_index_refuses_index_with_metadata_schema(monkeypatch):
+    pc = FakePinecone(existing={"papers-fake-3": OLD_SCHEMA})
+    monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
+
+    with pytest.raises(RetrievalConfigError) as error:
+        get_index(FakeEmbedder())
+
+    message = str(error.value)
+    assert "papers-fake-3" in message
+    assert "primary_category" in message and "year" in message
+    assert pc.indexes.created == []
+    assert pc.indexes.deleted == []
+    assert pc.opened == []
 
 
 def test_missing_pinecone_key_raises(monkeypatch):
