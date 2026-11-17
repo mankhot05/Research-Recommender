@@ -1,6 +1,6 @@
 """Search the embedder's Pinecone index for papers relevant to a question.
 
-Usage: python -m scripts.search "message passing for molecules" --k 5 --year-min 2022
+Usage: python scripts/search.py "message passing for molecules" --k 5 --year-min 2022
 """
 
 from __future__ import annotations

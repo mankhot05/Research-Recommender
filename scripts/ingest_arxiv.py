@@ -1,6 +1,6 @@
 """Fetch papers from arXiv and upsert them into the embedder's Pinecone index.
 
-Usage: python -m scripts.ingest_arxiv --query "graph neural networks" --max 200
+Usage: python scripts/ingest_arxiv.py --query "graph neural networks" --max 200
 """
 
 from __future__ import annotations

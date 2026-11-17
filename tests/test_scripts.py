@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from app.embeddings import EmbedderConfigError
@@ -123,3 +127,19 @@ def test_search_reports_config_errors(monkeypatch, capsys):
 
     assert search_script.main(["q"]) == 1
     assert "OPENAI_API_KEY" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("script", ["ingest_arxiv.py", "search.py"])
+def test_scripts_run_as_files_from_repo_root(script):
+    # Needs the package installed (pip install -e .), so `import app` resolves.
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, f"scripts/{script}", "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
