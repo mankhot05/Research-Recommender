@@ -7,12 +7,12 @@ arxiv_id, so re-ingesting a paper overwrites it instead of duplicating it.
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
+from app.config import get_settings
 from app.embeddings import Embedder, get_embedder, paper_to_text
 from app.schemas import Paper
 
@@ -48,10 +48,10 @@ def index_name(embedder: Embedder) -> str:
 def _pinecone() -> Pinecone:
     from pinecone import Pinecone
 
-    api_key = os.environ.get("PINECONE_API_KEY", "").strip()
-    if not api_key:
+    api_key = get_settings().pinecone_api_key
+    if api_key is None or not api_key.get_secret_value().strip():
         raise RetrievalConfigError("Missing PINECONE_API_KEY. Set it in .env")
-    return Pinecone(api_key=api_key)
+    return Pinecone(api_key=api_key.get_secret_value().strip())
 
 
 def get_index(embedder: Embedder) -> Index:

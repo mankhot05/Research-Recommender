@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from dotenv import load_dotenv
 from openai import OpenAIError
 from pinecone import PineconeError
 
@@ -28,7 +27,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    load_dotenv()
     try:
         # Check config and connect before the slow, rate-limited arXiv fetch.
         embedder = get_embedder()

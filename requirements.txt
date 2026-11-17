@@ -6,6 +6,7 @@ sentence-transformers
 fastapi
 uvicorn
 pydantic
+pydantic-settings
 python-dotenv
 arxiv
 pytest

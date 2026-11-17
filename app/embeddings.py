@@ -1,18 +1,18 @@
 """Embedding models for papers and queries behind a small Embedder interface.
 
-The implementation is picked at runtime from the EMBEDDER env var, so a new
+The implementation is picked at runtime from the EMBEDDER setting, so a new
 model (e.g. SPECTER/SciNCL via sentence-transformers) only needs a class and a
 registry entry here.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from langchain_core.embeddings import Embeddings
 
+from app.config import get_settings
 from app.schemas import Paper
 
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -46,8 +46,8 @@ class OpenAIEmbedder:
         if client is None:
             from langchain_openai import OpenAIEmbeddings
 
-            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-            if not api_key:
+            api_key = get_settings().openai_api_key
+            if api_key is None or not api_key.get_secret_value().strip():
                 raise EmbedderConfigError("Missing OPENAI_API_KEY. Set it in .env")
             client = OpenAIEmbeddings(
                 model=self.model, dimensions=self.dimension, api_key=api_key
@@ -89,8 +89,8 @@ _EMBEDDERS: dict[str, Callable[[], Embedder]] = {
 
 
 def get_embedder() -> Embedder:
-    """Build the embedder named by the EMBEDDER env var (default "openai")."""
-    name = os.environ.get("EMBEDDER", "").strip().lower() or "openai"
+    """Build the embedder named by the EMBEDDER setting (default "openai")."""
+    name = get_settings().embedder.strip().lower() or "openai"
     factory = _EMBEDDERS.get(name)
     if factory is None:
         valid = ", ".join(sorted(_EMBEDDERS))

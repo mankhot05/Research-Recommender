@@ -15,13 +15,6 @@ from scripts import search as search_script
 from tests.fakes import FakeEmbedder, FakeIndex, make_paper
 
 
-@pytest.fixture(autouse=True)
-def no_dotenv(monkeypatch):
-    # Keep a developer's real .env out of the tests.
-    monkeypatch.setattr(ingest_arxiv, "load_dotenv", lambda: None)
-    monkeypatch.setattr(search_script, "load_dotenv", lambda: None)
-
-
 def test_ingest_fetches_and_upserts(monkeypatch, capsys):
     calls = {}
     papers = [make_paper("2401.00001"), make_paper("2401.00002")]
