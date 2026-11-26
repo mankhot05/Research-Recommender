@@ -20,8 +20,11 @@ from app.retrieval import (
     PAPER_FIELDS,
     RetrievalConfigError,
     build_filter,
+    export_papers,
     get_index,
     index_name,
+    open_index,
+    paper_to_record,
     search,
     upsert_papers,
 )
@@ -175,6 +178,18 @@ def test_upsert_papers_record_shape():
     assert set(record["metadata"]) == set(PAPER_FIELDS)
 
 
+def test_upsert_papers_embeds_the_embedders_own_format():
+    class SepEmbedder(FakeEmbedder):
+        def format_paper(self, paper):
+            return f"{paper.title}[SEP]{paper.abstract}"
+
+    embedder = SepEmbedder()
+
+    upsert_papers([make_paper(title="T", abstract="A")], embedder, index=FakeIndex())
+
+    assert embedder.calls == [["T[SEP]A"]]
+
+
 def test_upsert_papers_drops_duplicate_ids_keeping_first():
     papers = [
         make_paper("2401.01234", title="First"),
@@ -280,6 +295,26 @@ def test_get_index_reuses_existing_plain_index(monkeypatch):
     assert pc.opened == ["papers-fake-3"]
 
 
+def test_get_index_without_create_refuses_missing_index(monkeypatch):
+    pc = FakePinecone()
+    monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
+
+    with pytest.raises(RetrievalConfigError, match="'papers-fake-3' does not exist"):
+        get_index(FakeEmbedder(), create=False)
+
+    assert pc.indexes.created == []
+    assert pc.opened == []
+
+
+def test_get_index_without_create_returns_existing_index(monkeypatch):
+    pc = FakePinecone(existing={"papers-fake-3": PLAIN_SCHEMA})
+    monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
+
+    get_index(FakeEmbedder(), create=False)
+
+    assert pc.opened == ["papers-fake-3"]
+
+
 def test_get_index_refuses_index_with_metadata_schema(monkeypatch):
     pc = FakePinecone(existing={"papers-fake-3": OLD_SCHEMA})
     monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
@@ -301,3 +336,90 @@ def test_missing_pinecone_key_raises(monkeypatch):
 
     with pytest.raises(RetrievalConfigError, match="PINECONE_API_KEY"):
         retrieval._pinecone()
+
+
+def test_open_index_opens_existing_plain_index(monkeypatch):
+    pc = FakePinecone(existing={"papers-openai-1536": PLAIN_SCHEMA})
+    monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
+
+    open_index("papers-openai-1536")
+
+    assert pc.opened == ["papers-openai-1536"]
+    assert pc.indexes.created == []
+
+
+def test_open_index_refuses_missing_index(monkeypatch):
+    pc = FakePinecone()
+    monkeypatch.setattr(retrieval, "_pinecone", lambda: pc)
+
+    with pytest.raises(RetrievalConfigError, match="'nope' does not exist"):
+        open_index("nope")
+
+    assert pc.indexes.created == []
+    assert pc.opened == []
+
+
+# --- export_papers --------------------------------------------------------
+
+
+def stored(*papers):
+    """Index records (id -> metadata) exactly as upsert_papers stores them."""
+    return {p.arxiv_id: paper_to_record(p, [0.0, 0.0, 1.0])["metadata"] for p in papers}
+
+
+def test_export_papers_round_trips_stored_metadata():
+    papers = [make_paper("2401.00001", title="One"), make_paper("2401.00002")]
+    index = FakeIndex(records=stored(*papers))
+
+    assert export_papers(index) == papers
+
+
+def test_export_papers_fetches_one_batch_per_listed_page():
+    papers = [make_paper(f"2401.{i:05d}") for i in range(250)]
+    index = FakeIndex(records=stored(*papers))
+
+    exported = export_papers(index, batch_size=100)
+
+    assert exported == papers
+    assert index.lists == [{"namespace": NAMESPACE, "limit": 100}]
+    assert [len(f["ids"]) for f in index.fetches] == [100, 100, 50]
+    assert all(f["namespace"] == NAMESPACE for f in index.fetches)
+
+
+def test_export_papers_empty_index():
+    index = FakeIndex()
+
+    assert export_papers(index) == []
+    assert index.fetches == []
+
+
+def test_export_papers_skips_ids_missing_from_fetch():
+    papers = [make_paper("2401.00001"), make_paper("2401.00002")]
+    index = FakeIndex(records=stored(*papers))
+    real_fetch = index.fetch
+
+    def fetch_without_second(**kwargs):
+        response = real_fetch(**kwargs)
+        response.vectors.pop("2401.00002", None)  # deleted after it was listed
+        return response
+
+    index.fetch = fetch_without_second
+
+    assert export_papers(index) == [papers[0]]
+
+
+def test_export_papers_drops_duplicate_arxiv_ids():
+    paper = make_paper("2401.00001")
+    # Two vector IDs whose metadata name the same paper.
+    index = FakeIndex(
+        records={"a": stored(paper)[paper.arxiv_id], "b": stored(paper)[paper.arxiv_id]}
+    )
+
+    assert export_papers(index) == [paper]
+
+
+def test_export_papers_rejects_invalid_metadata():
+    index = FakeIndex(records={"2401.00001": {"title": "no other fields"}})
+
+    with pytest.raises(ValueError, match="'2401.00001'"):
+        export_papers(index)

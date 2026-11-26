@@ -10,7 +10,12 @@ The roadmap and current chunk are in @docs/ROADMAP.md.
 - Test: `pytest -q`
 - Lint: `ruff check app tests scripts && ruff format app tests scripts`
 - Ingest arXiv papers into Pinecone: `python scripts/ingest_arxiv.py --query "graph neural networks" --max 200`
+- Re-ingest cached papers (data/papers.jsonl) without calling arXiv: `python scripts/ingest_arxiv.py --from-cache [--embedder NAME]`
+- Rebuild the cache from a Pinecone index (merges, de-duplicated by arxiv_id): `python scripts/export_cache.py [--index papers-openai-1536]`
 - Search the index: `python scripts/search.py "message passing for molecules" --k 5 --year-min 2022 [--category cs.LG]`
+- Compare embedders (writes docs/embedding_comparison.md): `python scripts/compare_embedders.py [--k 5] [--embedder NAME ...] ["query" ...]`
+- Recommend papers (runs the agent loop): `python scripts/recommend.py "message passing GNNs for molecules" [--max-iterations 3] [--no-fetch]`
+- Regenerate the agent diagram (docs/graph.md; paste into README too): `python scripts/draw_graph.py`
 - Run the API (from Chunk 5 on): `uvicorn app.main:app --reload`
 
 ## Conventions

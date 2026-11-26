@@ -13,7 +13,7 @@
 - [ ] **0. Setup:** install Claude Code, get API keys (OpenAI, Pinecone, HF), create the repo, CLAUDE.md, plan-mode workflow, scaffold.
 - [ ] **1. Warm-up, Chat-with-PDF** (separate small repo): chunk → embed → Pinecone → retrieve → answer with citations, plus a FastAPI `/query` endpoint.
 - [ ] **2. arXiv retrieval core:** fetch abstracts, upsert them with `arxiv_id` metadata, vector search script.
-- [ ] **3. SPECTER/SciNCL embeddings:** domain-specific embeddings via sentence-transformers.
+- [ ] **3. SPECTER/SciNCL embeddings:** domain-specific embeddings via sentence-transformers (SciNCL + SPECTER v1; SPECTER2 deferred until `adapters` supports transformers 5).
 - [ ] **4. LangGraph agent loop:** rewrite → search → retrieve → critique → loop or finish.
 - [ ] **5. FastAPI `/recommend`:** Pydantic request/response models.
 - [ ] **6. Docker + portfolio polish:** Dockerfile, plus a README with an architecture diagram and example queries.

@@ -4,7 +4,8 @@ Each embedder gets its own index (papers-<name>-<dimension>), so vectors from
 different models never share an index. The index is a plain serverless dense
 index: it declares only the vector, and every Paper field is stored as per-record
 metadata (Pinecone indexes metadata automatically, so year/category filters work).
-Records are keyed by arxiv_id, so re-ingesting a paper overwrites it.
+Records are keyed by arxiv_id, so re-ingesting a paper overwrites it. The text
+embedded for each paper comes from the embedder's own format_paper.
 """
 
 from __future__ import annotations
@@ -14,8 +15,10 @@ from collections.abc import Sequence
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from app.config import get_settings
-from app.embeddings import Embedder, get_embedder, paper_to_text
+from app.embeddings import Embedder, get_embedder
 from app.schemas import Paper
 
 if TYPE_CHECKING:
@@ -56,26 +59,45 @@ def _pinecone() -> Pinecone:
     return Pinecone(api_key=api_key.get_secret_value().strip())
 
 
-def get_index(embedder: Embedder) -> Index:
+def get_index(embedder: Embedder, *, create: bool = True) -> Index:
     """Return the embedder's index, creating it (serverless, cosine) if missing.
 
-    Raises RetrievalConfigError if an existing index declares metadata fields in
-    its schema; that index must be deleted by hand before ingesting again.
+    With create=False a missing index raises RetrievalConfigError instead, for
+    read-only callers that should not leave empty indexes behind.
+    Also raises RetrievalConfigError if an existing index declares metadata fields
+    in its schema; that index must be deleted by hand before ingesting again.
     """
     from pinecone import ServerlessSpec
 
     pc = _pinecone()
     name = index_name(embedder)
     if pc.indexes.exists(name):
-        _check_plain_dense_index(pc, name)
-    else:
-        # Blocks until the index is ready to accept writes.
-        pc.indexes.create(
-            name=name,
-            dimension=embedder.dimension,
-            metric=METRIC,
-            spec=ServerlessSpec(cloud=CLOUD, region=REGION),
+        return open_index(name)
+    if not create:
+        raise RetrievalConfigError(
+            f"Index {name!r} does not exist. Ingest first: "
+            f"python scripts/ingest_arxiv.py --from-cache --embedder {embedder.name}"
         )
+    # Blocks until the index is ready to accept writes.
+    pc.indexes.create(
+        name=name,
+        dimension=embedder.dimension,
+        metric=METRIC,
+        spec=ServerlessSpec(cloud=CLOUD, region=REGION),
+    )
+    return pc.index(name)
+
+
+def open_index(name: str) -> Index:
+    """Open an existing index by name, without building an embedder.
+
+    Raises RetrievalConfigError if the index does not exist or declares
+    metadata fields in its schema.
+    """
+    pc = _pinecone()
+    if not pc.indexes.exists(name):
+        raise RetrievalConfigError(f"Index {name!r} does not exist")
+    _check_plain_dense_index(pc, name)
     return pc.index(name)
 
 
@@ -130,10 +152,40 @@ def upsert_papers(
 
     for start in range(0, len(unique), UPSERT_BATCH_SIZE):
         batch = unique[start : start + UPSERT_BATCH_SIZE]
-        vectors = embedder.embed_documents([paper_to_text(p) for p in batch])
+        vectors = embedder.embed_documents([embedder.format_paper(p) for p in batch])
         records = [paper_to_record(p, v) for p, v in zip(batch, vectors, strict=True)]
         index.upsert(vectors=records, namespace=NAMESPACE, show_progress=False)
     return len(unique)
+
+
+def export_papers(index: Index, *, batch_size: int = UPSERT_BATCH_SIZE) -> list[Paper]:
+    """Every paper stored in the index, rebuilt from its metadata.
+
+    Lists the IDs a page at a time (at most 100 per page) and fetches each page's
+    metadata in one request. IDs that vanish between list and fetch are skipped.
+    Keeps the first paper for each arxiv_id. Raises ValueError naming the vector
+    ID if its metadata is not a valid Paper.
+    """
+    papers: list[Paper] = []
+    seen: set[str] = set()
+    for page in index.list(namespace=NAMESPACE, limit=batch_size):
+        ids = [item.id for item in page.vectors]
+        if not ids:
+            continue
+        fetched = index.fetch(ids=ids, namespace=NAMESPACE).vectors
+        for vector_id in ids:
+            vector = fetched.get(vector_id)
+            if vector is None:
+                continue
+            try:
+                paper = metadata_to_paper(dict(vector.metadata or {}))
+            except ValidationError as e:
+                raise ValueError(f"vector {vector_id!r}: not a valid paper: {e}") from e
+            if paper.arxiv_id in seen:
+                continue
+            seen.add(paper.arxiv_id)
+            papers.append(paper)
+    return papers
 
 
 def build_filter(

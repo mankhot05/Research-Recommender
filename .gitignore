@@ -34,3 +34,6 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Local data (paper cache)
+data/
